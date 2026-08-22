@@ -10,5 +10,8 @@
 # Spike test output
 spike/out/
 
+# Rust build output
+target/
+
 # Local build helper (env-specific MSVC path)
 build.bat

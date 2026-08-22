@@ -1,1 +1,0 @@
-D:\Claude\ Code\ Modeling\ and\ Procedureing\claude-aegis\target\debug\claude-aegis-proxy.exe: D:\Claude\ Code\ Modeling\ and\ Procedureing\claude-aegis\crates\proxy\src\lib.rs D:\Claude\ Code\ Modeling\ and\ Procedureing\claude-aegis\crates\proxy\src\main.rs

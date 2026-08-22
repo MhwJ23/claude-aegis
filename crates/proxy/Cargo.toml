@@ -1,0 +1,13 @@
+[package]
+name = "claude-aegis-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Loopback CONNECT proxy with domain allow-listing for AppContainer sandboxes"
+
+[[bin]]
+name = "claude-aegis-proxy"
+path = "src/main.rs"
+
+[dependencies]

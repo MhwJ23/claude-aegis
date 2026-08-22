@@ -1,0 +1,1 @@
+D:\Claude\ Code\ Modeling\ and\ Procedureing\claude-aegis\target\debug\libclaude_aegis_core.rlib: D:\Claude\ Code\ Modeling\ and\ Procedureing\claude-aegis\crates\core\src\launch.rs D:\Claude\ Code\ Modeling\ and\ Procedureing\claude-aegis\crates\core\src\lib.rs D:\Claude\ Code\ Modeling\ and\ Procedureing\claude-aegis\crates\proxy\src\lib.rs

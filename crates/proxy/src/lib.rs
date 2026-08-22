@@ -65,7 +65,7 @@ fn handle(mut client: TcpStream, allowlist: &[String]) -> io::Result<()> {
         return Ok(());
     }
 
-    let mut server = match TcpStream::connect(&target) {
+    let server = match TcpStream::connect(&target) {
         Ok(s) => s,
         Err(_) => {
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");

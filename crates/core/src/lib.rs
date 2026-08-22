@@ -13,14 +13,11 @@
 //! The engine wraps [`rappct`], validated end-to-end in the spike
 //! (see `spike/FINDINGS.md`).
 
+mod launch;
+
 use claude_aegis_proxy::Proxy;
 use rappct::acl::{grant_to_package, AccessMask, ResourcePath};
-use rappct::launch::merge_parent_env;
-use rappct::{
-    derive_sid_from_name, launch_in_container, AppContainerProfile, AppContainerSid,
-    KnownCapability, Launched, LaunchOptions, SecurityCapabilities, SecurityCapabilitiesBuilder,
-    StdioConfig,
-};
+use rappct::{AppContainerProfile, AppContainerSid, KnownCapability};
 
 /// Errors surfaced by the sandbox engine.
 #[derive(Debug)]
@@ -29,6 +26,8 @@ pub enum SandboxError {
     Rappct(rappct::AcError),
     /// An I/O error (e.g. starting the proxy).
     Io(std::io::Error),
+    /// A Windows API error (from the custom launch path).
+    Windows(String),
     /// A policy rejection (e.g. binary not in the process allow-list).
     NotAllowed(String),
 }
@@ -38,6 +37,7 @@ impl std::fmt::Display for SandboxError {
         match self {
             SandboxError::Rappct(e) => write!(f, "{e}"),
             SandboxError::Io(e) => write!(f, "{e}"),
+            SandboxError::Windows(e) => write!(f, "{e}"),
             SandboxError::NotAllowed(msg) => write!(f, "not allowed: {msg}"),
         }
     }
@@ -61,17 +61,22 @@ impl From<std::io::Error> for SandboxError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileAccess {
     Read,
+    ReadExecute,
     Write,
     ReadWrite,
+    /// Read + write + execute (convenience for directories hosting binaries).
+    Full,
 }
 
 impl FileAccess {
-    /// Map to the Windows generic access mask (GENERIC_READ / GENERIC_WRITE).
+    /// Map to Windows generic access masks (GENERIC_READ / WRITE / EXECUTE).
     fn mask(self) -> AccessMask {
         match self {
             FileAccess::Read => AccessMask(0x8000_0000),
+            FileAccess::ReadExecute => AccessMask(0xA000_0000),
             FileAccess::Write => AccessMask(0x4000_0000),
             FileAccess::ReadWrite => AccessMask(0xC000_0000),
+            FileAccess::Full => AccessMask(0xE000_0000),
         }
     }
 }
@@ -97,8 +102,9 @@ pub struct SandboxConfig {
 pub struct Sandbox {
     profile: AppContainerProfile,
     sid: AppContainerSid,
-    caps: SecurityCapabilities,
+    profile_name: String,
     allowed_binaries: Vec<String>,
+    #[allow(dead_code)] // domain proxy not yet re-wired into the custom launch path
     proxy_addr: Option<String>,
     _proxy_thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -112,10 +118,8 @@ impl Sandbox {
             config.profile_name.as_str(),
             None,
         )?;
-        let sid = derive_sid_from_name(config.profile_name.as_str())?;
-        let caps = SecurityCapabilitiesBuilder::new(&sid)
-            .with_known(&config.capabilities)
-            .build()?;
+        let sid = profile.sid.clone();
+        let profile_name = config.profile_name.clone();
 
         let (proxy_addr, proxy_thread) = if config.proxy_allowlist.is_empty() {
             (None, None)
@@ -131,7 +135,7 @@ impl Sandbox {
         Ok(Sandbox {
             profile,
             sid,
-            caps,
+            profile_name,
             allowed_binaries: config.allowed_binaries.clone(),
             proxy_addr,
             _proxy_thread: proxy_thread,
@@ -156,7 +160,7 @@ impl Sandbox {
     /// checked against it (case-insensitive) before launch. If a proxy is
     /// running, `HTTPS_PROXY`/`https_proxy` are set on the child (merged with
     /// the parent's essential environment).
-    pub fn launch(&self, exe: &str, args: &[&str]) -> Result<Launched, SandboxError> {
+    pub fn launch(&self, exe: &str, args: &[&str]) -> Result<u32, SandboxError> {
         if !self.allowed_binaries.is_empty()
             && !self
                 .allowed_binaries
@@ -168,31 +172,7 @@ impl Sandbox {
             )));
         }
 
-        let env = if let Some(addr) = &self.proxy_addr {
-            let proxy_url = format!("http://{addr}");
-            Some(merge_parent_env(vec![
-                (
-                    std::ffi::OsString::from("HTTPS_PROXY"),
-                    std::ffi::OsString::from(&proxy_url),
-                ),
-                (
-                    std::ffi::OsString::from("https_proxy"),
-                    std::ffi::OsString::from(&proxy_url),
-                ),
-            ]))
-        } else {
-            None
-        };
-
-        let cmdline = args.join(" ");
-        let opts = LaunchOptions {
-            exe: exe.into(),
-            cmdline: Some(cmdline),
-            env,
-            stdio: StdioConfig::Inherit,
-            ..Default::default()
-        };
-        Ok(launch_in_container(&self.caps, &opts)?)
+        launch::launch_appcontainer(&self.profile_name, exe, args)
     }
 
     /// Delete the AppContainer profile, cleaning up the sandbox identity.
@@ -209,7 +189,9 @@ mod tests {
     #[test]
     fn file_access_masks_are_standard_generic_values() {
         assert_eq!(FileAccess::Read.mask().0, 0x8000_0000);
+        assert_eq!(FileAccess::ReadExecute.mask().0, 0xA000_0000);
         assert_eq!(FileAccess::Write.mask().0, 0x4000_0000);
         assert_eq!(FileAccess::ReadWrite.mask().0, 0xC000_0000);
+        assert_eq!(FileAccess::Full.mask().0, 0xE000_0000);
     }
 }

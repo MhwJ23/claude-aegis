@@ -9,3 +9,6 @@
 
 # Spike test output
 spike/out/
+
+# Local build helper (env-specific MSVC path)
+build.bat

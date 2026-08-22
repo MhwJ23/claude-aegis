@@ -6,7 +6,7 @@ use rappct::KnownCapability;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(e) = run(&args) {
-        eprintln!("error: {e}");
+        eprintln!("error: {e:?}");
         std::process::exit(1);
     }
 }
@@ -68,12 +68,12 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let sandbox = Sandbox::create(&config)?;
 
     for dir in &grants {
-        sandbox.grant_path(dir, FileAccess::ReadWrite)?;
+        sandbox.grant_path(dir, FileAccess::Full)?;
     }
 
     let arg_refs: Vec<&str> = exe_args.iter().map(|s| s.as_str()).collect();
-    let child = sandbox.launch(&exe, &arg_refs)?;
-    println!("launched pid {}", child.pid);
+    let pid = sandbox.launch(&exe, &arg_refs)?;
+    println!("launched pid {}", pid);
 
     Ok(())
 }

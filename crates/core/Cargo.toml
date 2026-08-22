@@ -9,3 +9,11 @@ description = "AppContainer sandbox engine for Claude Code on Windows"
 [dependencies]
 rappct.workspace = true
 claude-aegis-proxy = { path = "../proxy" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }

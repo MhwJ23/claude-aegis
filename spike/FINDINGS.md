@@ -76,3 +76,23 @@
 - 完整验证链（已跑通）：`CreateAppContainerProfile → 授权路径(icacls) → CreateWellKnownSid(85) → SECURITY_CAPABILITIES → UpdateProcThreadAttribute(0x20009) → CreateProcess(claude.exe -p) → 连 API → 回复 OK`。
 
 **🎉 阶段 0 全部通过 → 可进入阶段 1（Rust 核心库）。**
+
+---
+
+## 🎉 阶段 1 实弹验证（本机 Rust 编译运行）—— 成功
+
+本机装 Rust 1.98 + MSVC（D 盘），`cargo build` 通过，`claude-aegis` CLI 真实把 claude.exe 关进 AppContainer，连 API 回复成功。
+
+### 关键 bug：rappct 的 launch_in_container 在 Win11 24H2 报 FILE_NOT_FOUND
+
+- **症状**：rappct 0.13.3 的 `launch_in_container` 在 Windows 11 24H2（build 26100）上，CreateProcessW 报 ERROR_FILE_NOT_FOUND (2)，最简的 cmd.exe 也失败。
+- **根因**：`CreateAppContainerProfile` 的 `pszDescription` 传 NULL 会导致它失败，然后 fallback 到 `DeriveAppContainerSidFromAppContainerName`——而 **Derive 和 Create 返回不同的 SID**，SECURITY_CAPABILITIES 用了错误的 SID。spike 的 C# 传了非空 `"spike"` 所以成功。
+- **解决**：绕开 rappct 的 launch 和 SDDL 往返，直接用 windows crate 调 `CreateAppContainerProfile`（**desc 必须非空**）+ `CreateWellKnownSid(WinCapabilityInternetClientSid=85)`，手动构建 SECURITY_CAPABILITIES + attribute list + `CreateProcessW`（手动 extern 声明 `#[link_name = "CreateProcessW"]`）。
+- **验证**：`claude-aegis --exe claude.exe --grant ... -- -p hi` → claude 在沙箱里回复 "Hi! What can I help you with today?" ✅
+
+### 其他踩坑
+
+- `InitializeProcThreadAttributeList` / `CreateWellKnownSid` 第一次调用（探测大小）返回 ERROR_INSUFFICIENT_BUFFER(122)，必须忽略（不能 `?`）。
+- `LocalAlloc` 返回 `Result<HLOCAL>`；`LocalFree` 需要 `Option<HLOCAL>`。
+- Git Bash 把 `/c` 转成 `C:/`——测试 cmd.exe 参数要用 `MSYS_NO_PATHCONV=1`。
+- windows crate 0.62.2 的 `CreateProcessW` 用泛型 `Param<PCWSTR>`，手动 `#[link_name]` 声明更稳。

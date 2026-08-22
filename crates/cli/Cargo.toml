@@ -1,0 +1,15 @@
+[package]
+name = "claude-aegis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Run Claude Code (or any program) inside an AppContainer sandbox on Windows"
+
+[[bin]]
+name = "claude-aegis"
+path = "src/main.rs"
+
+[dependencies]
+claude-aegis-core = { path = "../core" }
+rappct.workspace = true

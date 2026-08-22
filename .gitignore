@@ -1,0 +1,11 @@
+# Local tools (gh CLI, etc.) — not part of the project
+.tools/
+
+# Build artifacts
+*.exe
+
+# Downloaded archives
+*.zip
+
+# Spike test output
+spike/out/

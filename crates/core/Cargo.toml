@@ -8,3 +8,4 @@ description = "AppContainer sandbox engine for Claude Code on Windows"
 
 [dependencies]
 rappct.workspace = true
+claude-aegis-proxy = { path = "../proxy" }

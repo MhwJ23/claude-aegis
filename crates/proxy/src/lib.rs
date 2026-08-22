@@ -22,9 +22,18 @@ impl Proxy {
         Proxy { allowlist }
     }
 
-    /// Bind to `addr` (e.g. `127.0.0.1:8080`) and serve connections forever.
-    pub fn serve(&self, addr: &str) -> io::Result<()> {
+    /// Bind to `addr` and return the listener plus the actual bound address.
+    ///
+    /// Useful when `addr` uses port 0 for dynamic allocation — the caller gets
+    /// the real address back.
+    pub fn bind(addr: &str) -> io::Result<(TcpListener, String)> {
         let listener = TcpListener::bind(addr)?;
+        let actual = listener.local_addr()?.to_string();
+        Ok((listener, actual))
+    }
+
+    /// Serve connections from an already-bound listener (blocking).
+    pub fn serve_listener(&self, listener: TcpListener) -> io::Result<()> {
         for conn in listener.incoming() {
             match conn {
                 Ok(client) => {
@@ -37,6 +46,12 @@ impl Proxy {
             }
         }
         Ok(())
+    }
+
+    /// Bind to `addr` (e.g. `127.0.0.1:8080`) and serve connections forever.
+    pub fn serve(&self, addr: &str) -> io::Result<()> {
+        let (listener, _) = Proxy::bind(addr)?;
+        self.serve_listener(listener)
     }
 }
 

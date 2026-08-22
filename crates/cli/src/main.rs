@@ -12,10 +12,15 @@ fn main() {
 }
 
 fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    // Parse flags: --profile <name> --exe <path> [--grant <dir>]* [-- <exe-args>...]
+    // Parse flags:
+    //   --profile <name> --exe <path>
+    //   [--grant <dir>]*   grant read-write on a directory to the sandbox
+    //   [--allow <path>]*  process allow-list (empty = allow all)
+    //   [-- <exe-args>...] arguments forwarded to the launched binary
     let mut profile_name = "claude-aegis".to_string();
     let mut exe: Option<String> = None;
     let mut grants: Vec<String> = Vec::new();
+    let mut allows: Vec<String> = Vec::new();
     let mut exe_args: Vec<String> = Vec::new();
 
     let mut i = 0;
@@ -33,6 +38,10 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 i += 1;
                 grants.push(args.get(i).ok_or("--grant needs a value")?.clone());
             }
+            "--allow" => {
+                i += 1;
+                allows.push(args.get(i).ok_or("--allow needs a value")?.clone());
+            }
             "--" => {
                 exe_args = args[i + 1..].to_vec();
                 break;
@@ -47,6 +56,7 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let config = SandboxConfig {
         profile_name: profile_name.clone(),
         capabilities: vec![KnownCapability::InternetClient],
+        allowed_binaries: allows,
     };
     let sandbox = Sandbox::create(&config)?;
 

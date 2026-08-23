@@ -17,4 +17,3 @@ tauri = "2"
 serde = { version = "1", features = ["derive"] }
 rfd = "0.15"
 claude-aegis-core = { path = "../../crates/core" }
-rappct.workspace = true

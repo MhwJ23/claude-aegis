@@ -5,7 +5,6 @@
 //! [`claude_aegis_core`]; the sandboxing logic lives in the core crate.
 
 use claude_aegis_core::{AuditEvent, AuditLog, Config, FileAccess, Sandbox, SandboxConfig};
-use rappct::KnownCapability;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -102,7 +101,6 @@ fn run_sandbox_impl(
 
     let sandbox = Sandbox::create(&SandboxConfig {
         profile_name: config.profile.clone(),
-        capabilities: vec![KnownCapability::InternetClient],
         allowed_binaries: config.process.allow.clone(),
         audit_log: Some(audit_path.clone()),
     })?;
@@ -149,7 +147,13 @@ fn run_sandbox_impl(
 
     // Launch the program in its own console window (the GUI process has none).
     let args: Vec<&str> = Vec::new();
-    let child = sandbox.launch(&exe.to_string_lossy(), &args, proxy_addr.as_deref(), true)?;
+    let child = sandbox.launch(
+        &exe.to_string_lossy(),
+        &args,
+        proxy_addr.as_deref(),
+        true,
+        dir.map(std::path::Path::new),
+    )?;
     let pid = child.pid();
     let code = child.wait()?;
     sandbox.record(AuditEvent::Exit { pid, code });

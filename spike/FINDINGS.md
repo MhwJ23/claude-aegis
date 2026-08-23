@@ -185,3 +185,46 @@
 - `cargo build --workspace`、`cargo test --workspace`（8 测试）、`cargo clippy --workspace -- -D warnings`、`cargo fmt --check` 全绿。
 - 审计冒烟：`claude-aegis run --audit-log <p> -- /c exit 0`（cmd.exe）→ audit.log 出现 `grant/launch/proxy_start/launch/exit/proxy_stop` 完整链路，`proxy_start` 由代理经 stdout 重定向写入 ✅
 - GUI 冒烟：启动 `claude-aegis-gui.exe` → 窗口标题 `claude-aegis`、句柄非零、响应正常 ✅
+
+---
+
+## 🐛 安全修复批次（2026-08-23，P0-1/P0-2 + 三个核心 bug）
+
+> 隔离集成测试（`crates/core/tests/isolation.rs`）实弹暴露并定位了**三个此前一直潜伏的核心 bug**，
+> 它们让「文件授权」从未真正生效（stage-2 的 claude 是靠 env-var 认证 + exe 由宿主令牌加载而"碰巧"能跑）。
+
+### 三个核心 bug（都已修）
+
+1. **SID 不一致**：`Sandbox::create`（经 `AppContainerProfile::ensure`）拿到的是 `CreateAppContainerProfile` 的 SID；
+   而 `launch_appcontainer` 里 `get_appcontainer_sid` 在 profile 已存在时 `Create` 返回 ALREADY_EXISTS → fallback 到
+   `DeriveAppContainerSidFromAppContainerName`，**两者返回不同 SID** → grant 和 launch 用了两个 SID，授权对不上。
+   修：`launch` 直接复用 `Sandbox` 已解析的 SID（`self.sid.as_string()` → `ConvertStringSidToSidW`），不再二次推导。
+2. **TrusteeType 错误**：rappct 的 `grant_to_package` 用 `TRUSTEE_IS_WELL_KNOWN_GROUP(5)`，AppContainer SID 不是 well-known
+   group，`SetEntriesInAclW` 写出的 ACE 被内核在访问检查时忽略。修：core 自己实现 `grant_to_sid`，用 `TRUSTEE_IS_GROUP(2)`。
+3. **`already_granted` 恒返回 true**：它用 `GetEffectiveRightsFromAclW`，会把 **"Everyone" 组也算进去**——而 D 盘目录链
+   全继承 `Everyone:(F)`，于是它认为"已授权"、`grant_traverse` 跳过了真正授权（但 "Everyone" 对 AppContainer 受限令牌
+   运行时无效）。修：删除该错误的幂等检查（traverse 授权 grfInheritance=0 无传播，本就快，无需幂等）。
+
+### 配套修正
+
+- **traverse mask**：`FILE_TRAVERSE(0x20)` 或 `GENERIC_EXECUTE(0x20000000)` 单独都不够（打开目录遍历还需
+  `FILE_READ_ATTRIBUTES`/`SYNCHRONIZE`），须用 **`ReadExecute(0xA0000000)`**。`grant_traverse` 仍 `grfInheritance=0`
+  （不向子树传播，保持"祖先可遍历但不可枚举"的安全语义）。
+
+### P0-1 网络白名单强制（已做）
+
+- claude 不再无条件拿 `internetClient`：有代理时 `internet=false`（只能经代理出网），无代理（domains 空）时 `internet=true`
+  （保留"空=不过滤"的自定义）。代理始终 `internet=true`。实弹三态验证：命中=0 / 拦截=56 / 空域名直连=0。
+
+### P0-2 Job Object 防孤儿（已做）
+
+- 每个子进程挂一个 `KILL_ON_JOB_CLOSE` 的 Job（`PROC_THREAD_ATTRIBUTE_JOB_LIST`，属性表 1→2 个），`Child` drop 时关 job
+  句柄 → 内核清掉残留子进程。实弹验证：`cmd /c start /b timeout /t 120` 后 drop → tasklist 无 timeout。
+
+### 其它
+
+- `Sandbox::launch` 新增 `cwd: Option<&Path>`（子进程工作目录；CLI 用 `--dir`、GUI 用传入目录、测试用 System32）。
+- **P0-3（Low IL 降权）暂缓**：价值最低（AppContainer 令牌本身已受限）、风险最高（令牌操作可能破坏 claude）、
+  代码已标注 "future enhancement"。
+- **%TEMP% 默认对 AppContainer 可读**：Win11 24H2 的 `%TEMP%` 继承 `ALL APPLICATION PACKAGES:(RX)`，任何 AppContainer
+  默认能读 %TEMP% 下的文件——隔离测试的 secret 因此要放 D 盘（默认拒绝），这也是个值得写进 README 的事实。

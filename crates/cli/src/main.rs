@@ -2,7 +2,6 @@
 
 use clap::{Parser, Subcommand};
 use claude_aegis_core::{AuditEvent, Config, FileAccess, Sandbox, SandboxConfig};
-use rappct::KnownCapability;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -95,7 +94,6 @@ fn cmd_run(
 
     let sandbox = Sandbox::create(&SandboxConfig {
         profile_name: cfg.profile.clone(),
-        capabilities: vec![KnownCapability::InternetClient],
         allowed_binaries: cfg.process.allow.clone(),
         audit_log: audit_log.clone(),
     })?;
@@ -143,7 +141,13 @@ fn cmd_run(
             Some(audit) => {
                 sandbox.launch_with_stdout(&proxy_exe.to_string_lossy(), &proxy_arg_refs, audit)?
             }
-            None => sandbox.launch(&proxy_exe.to_string_lossy(), &proxy_arg_refs, None, false)?,
+            None => sandbox.launch(
+                &proxy_exe.to_string_lossy(),
+                &proxy_arg_refs,
+                None,
+                false,
+                None,
+            )?,
         };
         // Give the proxy a moment to bind before the program starts.
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -157,6 +161,7 @@ fn cmd_run(
         &arg_refs,
         proxy_addr.as_deref(),
         false,
+        dir.as_deref(),
     )?;
     let code = child.wait()?;
     sandbox.record(AuditEvent::Exit {

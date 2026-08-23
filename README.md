@@ -129,9 +129,15 @@ sandboxed program never gets write access to its own audit trail.
   the Windows kernel, not by Claude's tool code.
 - **Not a substitute for a security audit.** No sandbox is a proof. Treat this
   as one layer of a defense-in-depth strategy.
-- **The domain proxy is a best-effort filter.** It allow-lists by hostname, not
-  by IP, and does not inspect encrypted payloads. A determined payload that
-  reaches the allow-listed domain exfiltrates over that connection.
+- **The domain allow-list is enforced, but hostname-based.** When the proxy is
+  running, the sandboxed program has *no direct internet* (`internetClient` is
+  withheld from it), so all traffic must go through the proxy — it cannot bypass
+  the allow-list. The filter matches hostnames, not IPs, and does not inspect
+  encrypted payloads; a payload that reaches an allow-listed domain still
+  exfiltrates over that connection.
+- **Windows grants AppContainers read access to some locations by default**
+  (e.g. `%TEMP%` and system directories). "Default deny" therefore does not
+  cover `%TEMP%` — don't keep secrets there and expect the sandbox to hide them.
 - **The proxy shares the sandbox's identity.** The proxy and the sandboxed
   program run in the same AppContainer (same SID), which is what makes the
   admin-free loopback architecture work. The proxy is our own small binary.

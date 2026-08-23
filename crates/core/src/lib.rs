@@ -2,9 +2,10 @@
 //!
 //! Four control dimensions (see PLAN.md):
 //! 1. **File** — grant read/write access to specific paths via DACL (`grant_*`).
-//! 2. **Network** — AppContainer capabilities + a loopback domain-allow-list
-//!    proxy. The proxy runs *inside* the same AppContainer as the child (so
-//!    same-SID loopback works without admin), see `spike/FINDINGS.md`.
+//! 2. **Network** — a loopback domain-allow-list proxy. The proxy runs *inside*
+//!    the same AppContainer as the child (so same-SID loopback works without
+//!    admin) and is the only process granted `internetClient`; a proxied child
+//!    has no direct internet, so the allow-list is enforced (see `spike/FINDINGS.md`).
 //! 3. **Process** — launch whitelisted executables inside the container
 //!    (`allowed_binaries`).
 //! 4. **Privilege** — the AppContainer identity *is* the privilege boundary
@@ -22,8 +23,8 @@ pub use audit::{AuditEvent, AuditLog};
 pub use config::{Config, ConfigError};
 pub use launch::Child;
 
-use rappct::acl::{AccessMask, ResourcePath, grant_to_package};
-use rappct::{AppContainerProfile, AppContainerSid, KnownCapability};
+use rappct::acl::AccessMask;
+use rappct::{AppContainerProfile, AppContainerSid};
 
 /// Errors surfaced by the sandbox engine.
 #[derive(Debug)]
@@ -98,7 +99,10 @@ impl FileAccess {
             FileAccess::Write => AccessMask(0x4000_0000),
             FileAccess::ReadWrite => AccessMask(0xC000_0000),
             FileAccess::Full => AccessMask(0xE000_0000),
-            FileAccess::Traverse => AccessMask(0x2000_0000), // GENERIC_EXECUTE
+            // Read+execute: opening a directory to descend into it needs
+            // FILE_TRAVERSE *and* FILE_READ_ATTRIBUTES/SYNCHRONIZE, which bare
+            // FILE_TRAVERSE (0x20) or GENERIC_EXECUTE (0x20000000) do not cover.
+            FileAccess::Traverse => AccessMask(0xA000_0000),
         }
     }
 }
@@ -108,8 +112,6 @@ impl FileAccess {
 pub struct SandboxConfig {
     /// AppContainer profile name (also the package identity).
     pub profile_name: String,
-    /// Network capabilities to grant the sandbox.
-    pub capabilities: Vec<KnownCapability>,
     /// Process allow-list: executables the sandbox may launch.
     /// Empty means "allow all".
     pub allowed_binaries: Vec<String>,
@@ -169,32 +171,63 @@ impl Sandbox {
         &self.profile_name
     }
 
-    /// Whether the sandbox SID already has `specific` rights on `path`.
+    /// Grant `mask` on a file or directory to the sandbox SID.
     ///
-    /// `GetEffectiveRightsFromAclW` returns *specific* access rights (generic
-    /// bits mapped to specific, e.g. `GENERIC_EXECUTE` -> `FILE_TRAVERSE`), so
-    /// `specific` must be specific rights, not generic. Reading the ACL is fast;
-    /// only the *write* is slow — this skips the expensive grant on re-runs.
-    /// Best-effort: returns `false` on any error, so we fall through to the grant.
-    fn already_granted(&self, path: &str, specific: u32) -> bool {
+    /// Reimplements rappct's `grant_to_package` with the correct trustee type:
+    /// rappct passes `TRUSTEE_IS_WELL_KNOWN_GROUP`, which is wrong for an
+    /// AppContainer SID (a *group* SID, not a well-known group) — `SetEntriesInAclW`
+    /// still writes the ACE, but the kernel ignores it at access-check time, so
+    /// the grant silently has no effect. `TRUSTEE_IS_GROUP` fixes it (verified
+    /// end-to-end: the same ACE works when applied via `icacls`).
+    fn grant_to_sid(
+        &self,
+        path: &std::path::Path,
+        is_dir: bool,
+        mask: AccessMask,
+    ) -> Result<(), SandboxError> {
+        use std::os::windows::ffi::OsStrExt;
         use windows::Win32::Foundation::{HLOCAL, LocalFree};
         use windows::Win32::Security::Authorization::{
-            ConvertStringSidToSidW, GetEffectiveRightsFromAclW, GetNamedSecurityInfoW,
-            SE_FILE_OBJECT, TRUSTEE_FORM, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP,
-            TRUSTEE_TYPE, TRUSTEE_W,
+            ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW,
+            SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_FORM,
+            TRUSTEE_IS_GROUP, TRUSTEE_IS_SID, TRUSTEE_TYPE, TRUSTEE_W,
         };
-        use windows::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, PSID};
+        use windows::Win32::Security::{
+            ACE_FLAGS, ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        };
         use windows::core::{PCWSTR, PWSTR};
 
-        let sid_sddl = self.sid.as_string();
-        let sid_w: Vec<u16> = sid_sddl.encode_utf16().chain(std::iter::once(0)).collect();
+        let sid_w: Vec<u16> = self
+            .sid
+            .as_string()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let mut psid = PSID(std::ptr::null_mut());
-        if unsafe { ConvertStringSidToSidW(PCWSTR(sid_w.as_ptr()), &mut psid) }.is_err() {
-            return false;
+        unsafe {
+            ConvertStringSidToSidW(PCWSTR(sid_w.as_ptr()), &mut psid)
+                .map_err(|e| SandboxError::Windows(e.to_string()))?;
         }
 
-        let path_w: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut p_sd = windows::Win32::Security::PSECURITY_DESCRIPTOR(std::ptr::null_mut());
+        let mut trustee: TRUSTEE_W = unsafe { std::mem::zeroed() };
+        trustee.TrusteeForm = TRUSTEE_FORM(TRUSTEE_IS_SID.0);
+        trustee.TrusteeType = TRUSTEE_TYPE(TRUSTEE_IS_GROUP.0);
+        trustee.ptstrName = PWSTR(psid.0 as *mut _);
+
+        let mut ea: EXPLICIT_ACCESS_W = unsafe { std::mem::zeroed() };
+        ea.grfAccessPermissions = mask.0;
+        ea.grfAccessMode = GRANT_ACCESS;
+        ea.Trustee = trustee;
+        // Directories grant with (OI)(CI) inheritance; files/traverse do not.
+        ea.grfInheritance = if is_dir { ACE_FLAGS(0x3) } else { ACE_FLAGS(0) };
+
+        let path_w: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut p_sd = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
         let mut p_dacl: *mut ACL = std::ptr::null_mut();
         let st = unsafe {
             GetNamedSecurityInfoW(
@@ -209,30 +242,53 @@ impl Sandbox {
             )
         };
         if st.0 != 0 {
-            return false;
+            unsafe { LocalFree(Some(HLOCAL(psid.0))) };
+            return Err(SandboxError::Windows(format!(
+                "GetNamedSecurityInfoW failed: {st:?}"
+            )));
         }
 
-        let mut trustee: TRUSTEE_W = unsafe { std::mem::zeroed() };
-        trustee.TrusteeForm = TRUSTEE_FORM(TRUSTEE_IS_SID.0);
-        trustee.TrusteeType = TRUSTEE_TYPE(TRUSTEE_IS_WELL_KNOWN_GROUP.0);
-        trustee.ptstrName = PWSTR(psid.0 as *mut _);
+        let mut new_dacl: *mut ACL = std::ptr::null_mut();
+        let entries = [ea];
+        let st2 =
+            unsafe { SetEntriesInAclW(Some(&entries), Some(p_dacl as *const ACL), &mut new_dacl) };
+        if st2.0 != 0 {
+            unsafe {
+                LocalFree(Some(HLOCAL(psid.0)));
+                LocalFree(Some(HLOCAL(p_sd.0)));
+            }
+            return Err(SandboxError::Windows(format!(
+                "SetEntriesInAclW failed: {st2:?}"
+            )));
+        }
 
-        let mut granted: u32 = 0;
-        let err = unsafe { GetEffectiveRightsFromAclW(p_dacl, &trustee, &mut granted) };
-
-        // ConvertStringSidToSidW / GetNamedSecurityInfoW allocate with LocalAlloc.
+        let st3 = unsafe {
+            SetNamedSecurityInfoW(
+                PCWSTR(path_w.as_ptr()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(new_dacl as *const ACL),
+                None,
+            )
+        };
         unsafe {
             LocalFree(Some(HLOCAL(psid.0)));
             LocalFree(Some(HLOCAL(p_sd.0)));
+            LocalFree(Some(HLOCAL(new_dacl as *mut core::ffi::c_void)));
         }
-
-        err.0 == 0 && (granted & specific) == specific
+        if st3.0 != 0 {
+            return Err(SandboxError::Windows(format!(
+                "SetNamedSecurityInfoW failed: {st3:?}"
+            )));
+        }
+        Ok(())
     }
 
     /// Grant access on a directory to the sandbox identity (no ancestor grants).
     pub fn grant_dir(&self, path: &str, access: FileAccess) -> Result<(), SandboxError> {
-        let resource = ResourcePath::Directory(std::path::PathBuf::from(path));
-        grant_to_package(resource, &self.sid, access.mask())?;
+        self.grant_to_sid(std::path::Path::new(path), true, access.mask())?;
         self.record(AuditEvent::Grant {
             path: path.to_string(),
             access: access.as_str().to_string(),
@@ -242,8 +298,7 @@ impl Sandbox {
 
     /// Grant access on a file to the sandbox identity (no ancestor grants).
     pub fn grant_file(&self, path: &str, access: FileAccess) -> Result<(), SandboxError> {
-        let resource = ResourcePath::File(std::path::PathBuf::from(path));
-        grant_to_package(resource, &self.sid, access.mask())?;
+        self.grant_to_sid(std::path::Path::new(path), false, access.mask())?;
         self.record(AuditEvent::Grant {
             path: path.to_string(),
             access: access.as_str().to_string(),
@@ -260,16 +315,11 @@ impl Sandbox {
     /// directory itself, so this sets a non-inheriting ACE (via the `File`
     /// resource type, which rappct treats with `grfInheritance = 0`).
     pub fn grant_traverse(&self, path: &str) -> Result<(), SandboxError> {
-        // FILE_TRAVERSE (0x20) is the specific right for "descend into a
-        // directory". Checking it (fast read) skips the slow grant on re-runs,
-        // which matters because ancestors like the user profile take ~30s to
-        // propagate an ACL change.
-        const FILE_TRAVERSE: u32 = 0x20;
-        if self.already_granted(path, FILE_TRAVERSE) {
-            return Ok(());
-        }
-        let resource = ResourcePath::File(std::path::PathBuf::from(path));
-        grant_to_package(resource, &self.sid, FileAccess::Traverse.mask())?;
+        self.grant_to_sid(
+            std::path::Path::new(path),
+            false,
+            FileAccess::Traverse.mask(),
+        )?;
         Ok(())
     }
 
@@ -323,8 +373,20 @@ impl Sandbox {
         args: &[&str],
         proxy_addr: Option<&str>,
         new_console: bool,
+        cwd: Option<&std::path::Path>,
     ) -> Result<Child, SandboxError> {
-        self.launch_internal(exe, args, proxy_addr, new_console, None)
+        // A child routed through the proxy gets no direct internet, so the
+        // domain allow-list is enforced; a child without a proxy (domains
+        // empty) keeps `internetClient` for direct access.
+        self.launch_internal(
+            exe,
+            args,
+            proxy_addr,
+            new_console,
+            None,
+            proxy_addr.is_none(),
+            cwd,
+        )
     }
 
     /// Launch a process inside the sandbox with its stdout redirected to a file
@@ -337,9 +399,11 @@ impl Sandbox {
         args: &[&str],
         stdout: &std::path::Path,
     ) -> Result<Child, SandboxError> {
-        self.launch_internal(exe, args, None, false, Some(stdout))
+        // The proxy is the one process that may reach the internet directly.
+        self.launch_internal(exe, args, None, false, Some(stdout), true, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn launch_internal(
         &self,
         exe: &str,
@@ -347,6 +411,8 @@ impl Sandbox {
         proxy_addr: Option<&str>,
         new_console: bool,
         stdout_path: Option<&std::path::Path>,
+        internet: bool,
+        cwd: Option<&std::path::Path>,
     ) -> Result<Child, SandboxError> {
         if !self.allowed_binaries.is_empty()
             && !self
@@ -360,12 +426,14 @@ impl Sandbox {
         }
 
         let child = launch::launch_appcontainer(
-            &self.profile_name,
+            self.sid.as_string(),
             exe,
             args,
             proxy_addr,
             new_console,
             stdout_path,
+            internet,
+            cwd,
         )?;
         self.record(AuditEvent::Launch {
             profile: self.profile_name.clone(),
@@ -393,6 +461,8 @@ mod tests {
         assert_eq!(FileAccess::Write.mask().0, 0x4000_0000);
         assert_eq!(FileAccess::ReadWrite.mask().0, 0xC000_0000);
         assert_eq!(FileAccess::Full.mask().0, 0xE000_0000);
-        assert_eq!(FileAccess::Traverse.mask().0, 0x2000_0000);
+        // Traverse uses read+execute (not bare FILE_TRAVERSE): opening a
+        // directory to descend into it needs FILE_READ_ATTRIBUTES too.
+        assert_eq!(FileAccess::Traverse.mask().0, 0xA000_0000);
     }
 }

@@ -1,7 +1,7 @@
 # PLAN.md — claude-aegis：Claude Code Windows 原生沙箱
 
 > 本文件是本项目的**唯一权威计划**。任何新会话只要读此文件，即可无缝接手继续执行。
-> 最后更新：2026-08-22
+> 最后更新：2026-08-23
 
 ---
 
@@ -54,8 +54,8 @@
   - **结论：技术路线完全可行，进入阶段 1**。详见 `claude-aegis/spike/FINDINGS.md`
 - **阶段 1 — Rust 核心库**：用 rappct 实现四类控制，配单元测试 + 隔离测试。✅
 - **阶段 2 — CLI 完整化**：配置加载、命令行参数、错误处理、`init`/`run` 子命令。✅（2026-08-22 完成：TOML 配置 + clap CLI + 域名代理接回 launch，claude.exe 实弹经域内代理回复 OK，详见 `spike/FINDINGS.md`）
-- **阶段 3 — GUI（第二批）**：图形配置界面（技术栈届时再定，候选 Tauri）。
-- **阶段 4 — 发布**：README（中英双语）、CI（GitHub Actions Windows runner 编译）、License、发布到 GitHub。
+- **阶段 3 — GUI（第二批）**：图形配置界面（技术栈届时再定，候选 Tauri）。✅（2026-08-23 完成：Tauri v2 静态前端 GUI + 审计日志，详见 `spike/FINDINGS.md` 阶段 3/4 节）
+- **阶段 4 — 发布**：README（中英双语）、CI（GitHub Actions Windows runner 编译）、License、发布到 GitHub。✅（2026-08-23 完成：README.md/README.zh.md + ci.yml/clippy/fmt + release.yml 打包 zip + Apache-2.0，tag v0.1.0）
 
 ## 8. 架构（monorepo，Cargo workspace）
 

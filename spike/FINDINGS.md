@@ -149,3 +149,39 @@
 - `claude-aegis run --config claude.toml -- -p "Reply with exactly: OK"` → 沙箱内 claude 经域内代理回复 `OK` ✅
 - 代理白名单：放行 `deepseek.com` 时正常转发；放行 `anthropic.com` 时正确拦截（claude 实际连 deepseek.com）✅
 - `cargo test --workspace` 全绿、`cargo clippy` 无警告、`cargo fmt` 干净。
+
+---
+
+## ✅ 阶段 3/4 完成：Tauri GUI + 审计日志 + 发布（2026-08-23）
+
+> 交付：`gui/`（Tauri v2 静态前端）、core 审计日志、proxy net 审计、README 中英、CI/release workflow、Apache-2.0。
+
+### 🔑 关键设计：审计日志"防篡改"（最重要的架构决策）
+
+- **问题**：审计日志由两部分写——宿主进程写 `launch/exit/grant/proxy_stop`（成功），代理进程写 `proxy_start/net`。代理跑在沙箱内，对审计文件**没有写权限**，那些行会**静默丢失**。
+- **不能简单授权**：代理和 claude **共享同一 AppContainer SID**（阶段 2 架构），给审计文件授权写 = claude 也能写/截断自己的审计日志 → 违背"合规审计"初衷。
+- **正解**：代理把审计行写到 **stdout**（`--audit` 标志），**宿主机**在 `CreateProcessW` 里把代理 stdout 重定向到审计文件（append 模式，`STARTF_USESTDHANDLES` + `SetHandleInformation(HANDLE_FLAG_INHERIT)` + `bInheritHandles=1`）。沙箱进程全程**拿不到审计文件的写权限**。
+- 落点：core `launch.rs` 的 `launch_appcontainer(..., stdout_path: Option<&Path>)` + `Sandbox::launch_with_stdout()`；`audit.rs` 的 `AuditLog::append/read_tail`（JSONL，`ts`=unix 秒）。
+
+### 🔑 Tauri v2 静态前端（免 Node）踩坑
+
+1. **免 bundler 配置**：`tauri.conf.json` → `build.frontendDist = "../src"`（直指静态目录）、`devUrl/before*Command` 省略；`app.withGlobalTauri = true` 暴露 `window.__TAURI__.core.invoke(cmd, args)`。前端是纯 HTML/CSS/JS，**构建全程无 Node**。
+2. **`[lib] name` 必须显式声明**：默认 lib crate 名是 `claude_aegis_gui`，但 `main.rs` 按 Tauri 惯例引用 `claude_aegis_gui_lib`。需在 `Cargo.toml` 加 `[lib] name = "claude_aegis_gui_lib"`，否则报 E0433。
+3. **capabilities 文件**：`src-tauri/capabilities/default.json` 给 `main` 窗口 `core:default` 权限（自定义 command 不设权限也可 invoke，但官方模板都带 `core:default`）。
+4. **图标**：用 Pillow（本机 Python 3.13 + PIL 12.3）生成 `icon.png`(512) + `icon.ico`(多尺寸)。生成脚本 `.tools/gen-icon.py`（gitignored），产物 `gui/src-tauri/icons/` 已提交。
+5. **GUI 作为根 workspace 成员** + `default-members` 排除，避免裸 `cargo build` 拖入 tauri；CI 用 `--workspace` 全量构建。
+6. **GUI「运行」在新控制台窗口**：core `launch` 加 `new_console` 参数 → `CREATE_NEW_CONSOLE(0x10)`（在 `Win32::System::Threading`，不在 `Console`）。`run_sandbox` 走同步 Tauri 命令（自带线程池，不卡 UI）。
+7. **`rfd`** 做原生目录选择（`pick_folder` 命令），比 `tauri-plugin-dialog` 简单（无需 capability 配置）。
+
+### ⚠️ 其它踩坑
+
+- **孤儿代理进程锁死 target exe**：阶段 2 残留的 4 个 `claude-aegis-proxy.exe` 锁着 `target/debug/claude-aegis-proxy.exe`，导致 `cargo build` 报"拒绝访问"删除文件失败。本会话用独立 `CARGO_TARGET_DIR=/d/aegis-target` 绕过；用户需自行清理残留进程。
+- **serde_json/tauri 依赖树经代理下载**：需 `export HTTPS_PROXY/HTTP_PROXY=http://127.0.0.1:65532` 才能从 crates.io 拉取。
+- **测试共用临时文件**会并行互相干扰（read_tail 读到别的测试的行）→ 每个测试用独立临时文件名。
+- **Windows crate 常量路径**：`CREATE_NEW_CONSOLE`/`STARTF_USESTDHANDLES` 在 `Win32::System::Threading`；`SetHandleInformation`/`HANDLE_FLAG_INHERIT` 在 `Win32::Foundation`。
+
+### ✅ 端到端验证结果
+
+- `cargo build --workspace`、`cargo test --workspace`（8 测试）、`cargo clippy --workspace -- -D warnings`、`cargo fmt --check` 全绿。
+- 审计冒烟：`claude-aegis run --audit-log <p> -- /c exit 0`（cmd.exe）→ audit.log 出现 `grant/launch/proxy_start/launch/exit/proxy_stop` 完整链路，`proxy_start` 由代理经 stdout 重定向写入 ✅
+- GUI 冒烟：启动 `claude-aegis-gui.exe` → 窗口标题 `claude-aegis`、句柄非零、响应正常 ✅

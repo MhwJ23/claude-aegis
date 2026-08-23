@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="claude-aegis logo" width="132" />
+</p>
+
 # claude-aegis
 
 Run **Claude Code** (or any Windows program) inside a real OS-level sandbox —

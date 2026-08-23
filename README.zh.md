@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="claude-aegis logo" width="132" />
+</p>
+
 # claude-aegis
 
 在**原生 Windows** 上，用真正的操作系统级沙箱 —— **AppContainer** —— 运行

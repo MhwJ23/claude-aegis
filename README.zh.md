@@ -7,8 +7,16 @@
 
 [![CI](https://github.com/MhwJ23/claude-aegis/actions/workflows/ci.yml/badge.svg)](https://github.com/MhwJ23/claude-aegis/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/MhwJ23/claude-aegis)](https://github.com/MhwJ23/claude-aegis/releases)
 
 ---
+
+## claude-aegis 是什么？
+
+它把 **Claude Code**（或你运行的任何程序）关进 Windows 的 **AppContainer**——
+也就是 Windows 商店应用用的那种系统级隔离。由你决定它能读/写哪些文件夹、能访问
+哪些网站、能启动哪些程序；其余一律拦截，每次操作都写进审计日志。无需管理员权限、
+无需 WSL、无需 Docker。
 
 ## 面向谁？
 

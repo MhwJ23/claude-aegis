@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Loopback CONNECT proxy with domain allow-listing for AppContainer sandboxes"
+description = "Loopback CONNECT proxy that enforces a domain allow-list for an AppContainer sandbox — TLS passthrough (no MITM), with per-connection audit decisions."
 
 [[bin]]
 name = "claude-aegis-proxy"

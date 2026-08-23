@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Tauri GUI for claude-aegis: graphical config + audit log"
+description = "Tauri GUI for claude-aegis — a graphical config editor (files, network, process) and a live, color-coded audit log, for enterprise and non-technical users."
 
 [lib]
 name = "claude_aegis_gui_lib"

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "AppContainer sandbox engine for Claude Code on Windows"
+description = "AppContainer sandbox engine for Claude Code on native Windows — OS-level file, network, process and privilege isolation, plus an append-only JSON audit log."
 
 [dependencies]
 rappct.workspace = true

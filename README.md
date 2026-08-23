@@ -7,8 +7,17 @@ Run **Claude Code** (or any Windows program) inside a real OS-level sandbox —
 
 [![CI](https://github.com/MhwJ23/claude-aegis/actions/workflows/ci.yml/badge.svg)](https://github.com/MhwJ23/claude-aegis/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/MhwJ23/claude-aegis)](https://github.com/MhwJ23/claude-aegis/releases)
 
 ---
+
+## What is claude-aegis?
+
+It puts **Claude Code** (or anything else you run) inside a Windows
+**AppContainer** — the same OS-level isolation Windows Store apps use. You decide
+which folders it can read or write, which websites it can reach, and which
+programs it can start; everything else is blocked, and every action is written
+to an audit log. No administrator rights, no WSL, no Docker.
 
 ## Who is this for?
 

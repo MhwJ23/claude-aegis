@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Run Claude Code (or any program) inside an AppContainer sandbox on Windows"
+description = "Run Claude Code (or any program) inside an AppContainer sandbox on native Windows — no admin, no WSL, no Docker. TOML config, init/run commands, and audit logging."
 
 [[bin]]
 name = "claude-aegis"

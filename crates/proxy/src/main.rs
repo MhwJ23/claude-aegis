@@ -25,7 +25,11 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "--allow" => {
                 i += 1;
                 let val = args.get(i).ok_or("--allow needs a value")?;
-                allowlist.extend(val.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+                allowlist.extend(
+                    val.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                );
             }
             other => {
                 return Err(format!("unknown argument: {other}").into());

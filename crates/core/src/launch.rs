@@ -12,18 +12,21 @@
 //! with ERROR_FILE_NOT_FOUND. See spike/FINDINGS.md.
 
 use crate::SandboxError;
-use windows::core::{PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, HLOCAL, LocalFree};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, HANDLE, HLOCAL, LocalFree, WAIT_FAILED,
+};
 use windows::Win32::Security::{
     CreateWellKnownSid, PSID, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
     WinCapabilityInternetClientSid,
 };
-use windows::Win32::System::Memory::{LocalAlloc, LMEM_FIXED};
+use windows::Win32::System::Memory::{LMEM_FIXED, LocalAlloc};
 use windows::Win32::System::Threading::{
-    DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-    UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, STARTUPINFOW,
+    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
+    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, STARTUPINFOEXW, STARTUPINFOW,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
+use windows::core::{PCWSTR, PWSTR};
 
 #[link(name = "Userenv")]
 unsafe extern "system" {
@@ -61,12 +64,62 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-/// Launch a process inside an AppContainer, returning its PID.
+/// A launched sandboxed child. The process handle is kept open so the caller
+/// can wait for the child to exit.
+pub struct Child {
+    pid: u32,
+    process: HANDLE,
+}
+
+impl Child {
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Block until the child exits and return its exit code.
+    pub fn wait(&self) -> Result<u32, SandboxError> {
+        unsafe {
+            let r = WaitForSingleObject(self.process, INFINITE);
+            if r == WAIT_FAILED {
+                return Err(SandboxError::Windows(
+                    "WaitForSingleObject failed".to_string(),
+                ));
+            }
+            let mut code: u32 = 0;
+            GetExitCodeProcess(self.process, &mut code)
+                .map_err(|e| SandboxError::Windows(e.to_string()))?;
+            Ok(code)
+        }
+    }
+
+    /// Terminate the child process.
+    pub fn kill(&self) -> Result<(), SandboxError> {
+        unsafe {
+            TerminateProcess(self.process, 1).map_err(|e| SandboxError::Windows(e.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.process);
+        }
+    }
+}
+
+/// Launch a process inside an AppContainer, returning a [`Child`] handle.
+///
+/// When `proxy_addr` is set (e.g. `127.0.0.1:PORT`), `HTTP(S)_PROXY` is set on
+/// the child so its traffic routes through the loopback domain proxy. `NO_PROXY`
+/// excludes loopback itself so localhost connections stay direct.
 pub fn launch_appcontainer(
     profile_name: &str,
     exe: &str,
     args: &[&str],
-) -> Result<u32, SandboxError> {
+    proxy_addr: Option<&str>,
+) -> Result<Child, SandboxError> {
     let app_sid = get_appcontainer_sid(profile_name)?;
     let cap_sid = get_internet_client_sid()?;
 
@@ -112,6 +165,23 @@ pub fn launch_appcontainer(
     si.lpAttributeList = attr_list;
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
+    // Set proxy vars on the current process; the child inherits them
+    // (lpEnvironment = NULL). Avoids CREATE_UNICODE_ENVIRONMENT, which fails
+    // with ERROR_ENVVAR_NOT_FOUND in the AppContainer path on 24H2.
+    if let Some(addr) = proxy_addr {
+        let proxy_url = format!("http://{addr}");
+        // SAFETY: single-threaded CLI process; set before spawning the child.
+        unsafe {
+            for k in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
+                std::env::set_var(k, &proxy_url);
+            }
+            // Keep the loopback proxy itself reachable directly, and leave
+            // localhost dev servers unproxied.
+            std::env::set_var("NO_PROXY", "127.0.0.1,localhost");
+            std::env::set_var("no_proxy", "127.0.0.1,localhost");
+        }
+    }
+
     let ok = unsafe {
         CreateProcessW_raw(
             PCWSTR(exe_w.as_ptr()),
@@ -141,10 +211,12 @@ pub fn launch_appcontainer(
 
     let pid = pi.dwProcessId;
     unsafe {
-        let _ = CloseHandle(pi.hProcess);
         let _ = CloseHandle(pi.hThread);
     }
-    Ok(pid)
+    Ok(Child {
+        pid,
+        process: pi.hProcess,
+    })
 }
 
 /// Obtain the AppContainer SID: create the profile, or derive if it already exists.
@@ -169,12 +241,12 @@ fn get_appcontainer_sid(name: &str) -> Result<PSID, SandboxError> {
     }
 
     sid_ptr = std::ptr::null_mut();
-    let hr2 = unsafe { DeriveAppContainerSidFromAppContainerName(PCWSTR(w.as_ptr()), &mut sid_ptr) };
+    let hr2 =
+        unsafe { DeriveAppContainerSidFromAppContainerName(PCWSTR(w.as_ptr()), &mut sid_ptr) };
     if hr2.is_err() || sid_ptr.is_null() {
         return Err(SandboxError::Windows(format!(
             "AppContainer SID failed: create={} derive={}",
-            hr.0,
-            hr2.0
+            hr.0, hr2.0
         )));
     }
     Ok(PSID(sid_ptr))
@@ -198,11 +270,20 @@ fn get_internet_client_sid() -> Result<PSID, SandboxError> {
 }
 
 /// Build the command line: quoted program path + args.
+///
+/// Args containing whitespace or quotes are wrapped in double quotes (basic
+/// Windows command-line quoting, sufficient for common cases).
 fn build_cmdline(exe: &str, args: &[&str]) -> String {
-    let exe_quoted = format!("\"{}\"", exe);
-    if args.is_empty() {
-        exe_quoted
-    } else {
-        format!("{} {}", exe_quoted, args.join(" "))
+    let mut cmd = format!("\"{}\"", exe);
+    for arg in args {
+        cmd.push(' ');
+        if arg.contains(char::is_whitespace) || arg.contains('"') {
+            cmd.push('"');
+            cmd.push_str(&arg.replace('"', "\\\""));
+            cmd.push('"');
+        } else {
+            cmd.push_str(arg);
+        }
     }
+    cmd
 }

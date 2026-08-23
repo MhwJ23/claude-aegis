@@ -13,3 +13,4 @@ path = "src/main.rs"
 [dependencies]
 claude-aegis-core = { path = "../core" }
 rappct.workspace = true
+clap = { version = "4", features = ["derive"] }

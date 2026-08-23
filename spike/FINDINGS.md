@@ -96,3 +96,56 @@
 - `LocalAlloc` 返回 `Result<HLOCAL>`；`LocalFree` 需要 `Option<HLOCAL>`。
 - Git Bash 把 `/c` 转成 `C:/`——测试 cmd.exe 参数要用 `MSYS_NO_PATHCONV=1`。
 - windows crate 0.62.2 的 `CreateProcessW` 用泛型 `Param<PCWSTR>`，手动 `#[link_name]` 声明更稳。
+
+---
+
+## 🎯 阶段 2 关键发现：AppContainer 的 loopback 网络隔离（决定域名代理架构）
+
+> 实弹验证（`crates/core/examples/loopback_probe.rs` 探针 + 沙箱内 curl）+ 联网研究双重确认。
+
+### 结论：`internetClient` 不授予 loopback，但**同 SID 进程间 loopback 可以互通**
+
+1. **AppContainer → 宿主进程的 loopback 被 WFP 阻断**：仅带 `internetClient`(S-1-15-3-1) 的沙箱进程，连接宿主在 127.0.0.1 的监听器，SYN 被 WFP 的 AppContainer Loopback Filter 静默丢弃（curl 卡在 `Trying 127.0.0.1:...`，不报"拒绝连接"）。`privateNetworkClientServer`(S-1-15-3-3) 同样**不**授予 loopback。
+2. **loopback 豁免需要管理员**：`CheckNetIsolation LoopbackExempt -a -p=<SID>` 或 `NetworkIsolationSetAppContainerConfig`（rappct 的 `net` feature 封装了这个），写入防火墙服务（MPSSVC），非提升权限调用返回 ACCESS_DENIED。
+3. **同 SID（同一 AppContainer）多进程 loopback 可以互通**（本机实弹确认）：两个分别用 `CreateProcessW` 关进**同一个 profile 名**（同 SID）的进程，一个 bind 127.0.0.1、一个 connect 127.0.0.1，连接成功（探针输出 `CONNECTED` + `ACCEPTED`）。无需豁免、无需管理员。
+
+### 架构决策（据此定稿）
+
+- **域名代理跑在沙箱内部**（与 claude.exe 同一个 AppContainer / 同 SID），监听 127.0.0.1，claude 通过 `HTTPS_PROXY=http://127.0.0.1:PORT` 走代理。代理自身用 `internetClient` 出网、按域名白名单放行。
+- 这样全程**免管理员**，符合项目"免 admin"核心卖点。
+- 代价：代理和 claude 共享同一能力令牌（代理必须小、可信），但代理是本项目自己的二进制，可接受。
+
+### 其它踩坑（阶段 2 排查时）
+
+- 后台/嵌套 `cmd //c` 调用 `build.bat` 会**吞掉 cargo 输出**；要调试编译错误，直接 `export RUSTUP_HOME/D...` 后从 bash 直接跑 `cargo`（纯 Rust 目标可脱离 vcvars 链接）。
+- `cargo build --example X` 在 workspace 根需要 `-p <crate>` 指定包。
+- 非提升权限的 `netstat`/`Get-NetTCPConnection` **看不到** AppContainer 的 loopback 监听器（但端口确实被占用，二次 bind 报 10048）。
+- 当前 CLI `launch()` 不等待子进程、进程退出会杀死线程内代理 → 阶段 2 必须改成"启动代理进程(同容器) → 启动 claude → 等 claude 退出 → 杀代理"。
+
+---
+
+## ✅ 阶段 2 完成：CLI 完整化（配置文件 + 完整命令 + 域名代理接回 launch）
+
+> 实弹验证全部通过：`claude-aegis run` 把 claude.exe 关进沙箱、经域内代理连 API 回复 OK。
+
+### 交付内容
+
+- **配置文件** `claude-aegis.toml`（TOML，serde）：`profile` / `command` / `[files].read/write` / `[network].domains` / `[process].allow`。`crates/core/src/config.rs`。
+- **CLI**（clap derive）：`claude-aegis init`（脚手架生成配置）、`claude-aegis run --config <path> [--dir <项目>] [-- <args>]`（加载配置 → 授权 → 起代理 → 启动 → 等退出 → 杀代理）。`crates/cli/src/main.rs`。
+- **代理接回 launch**：代理作为独立进程跑在沙箱内部（同 SID），CLI 选空闲 loopback 端口、启动代理、把 `HTTPS_PROXY=http://127.0.0.1:PORT` 注入 claude（`NO_PROXY=127.0.0.1,localhost`）。核心库 `launch()` 返回 `Child`（含 `wait()`/`kill()`）。
+
+### 关键踩坑（阶段 2 实弹排查）
+
+1. **ACL 授权在大目录上极慢（~30s/个）**：`SetNamedSecurityInfoW`（rappct 用）和 `icacls` 在 `C:\Users\<用户>`、`AppData` 这类海量目录上都 ~28-30s——本质是 ACL **继承传播**（把继承 ACE 重算到整棵子树），与 API 无关。
+   - **解决**：幂等检查。授权前用 `GetEffectiveRightsFromAclW` 读 ACL 判断是否已授权，已授权就跳过（读很快）。首轮 ~60s（授权用户目录+AppData），之后每次 ~0.5s。
+   - ⚠️ **坑**：`GetEffectiveRightsFromAclW` 返回的是**具体权限**（generic 已映射成 specific，如 `GENERIC_EXECUTE`→`FILE_TRAVERSE=0x20`），不是 generic 位。检查必须用具体位 `0x20`，不能用 `0x20000000`。
+2. **祖先 traverse 授权不能带继承**：`grant_traverse` 用 `ResourcePath::File`（rappct 里 `grfInheritance=0`）授权目录，避免向子树传播。叶子授权（项目目录）才需要 `(OI)(CI)` 继承。
+3. **命令 exe 授权 best-effort**：`System32`/`Program Files` 里的二进制 AppContainer 本来就可读（ALL APPLICATION PACKAGES），改其 ACL 会 access-denied——忽略，靠 `CreateProcessW` 失败兜底。
+4. **`build_cmdline` 必须给含空格的参数加引号**（`-p "Reply with exactly: OK"` 这种会被拆散）。
+5. **本机 claude 的 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`**（不是 api.anthropic.com）——域名白名单必须匹配 claude 实际连的 API 域名，否则代理正确返回 403。测试时 `domains=["deepseek.com"]` 通过、`domains=["anthropic.com"]` 正确拦截，双向都验证了白名单。
+
+### 端到端验证结果（exit 0）
+
+- `claude-aegis run --config claude.toml -- -p "Reply with exactly: OK"` → 沙箱内 claude 经域内代理回复 `OK` ✅
+- 代理白名单：放行 `deepseek.com` 时正常转发；放行 `anthropic.com` 时正确拦截（claude 实际连 deepseek.com）✅
+- `cargo test --workspace` 全绿、`cargo clippy` 无警告、`cargo fmt` 干净。

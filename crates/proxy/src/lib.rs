@@ -91,7 +91,10 @@ fn read_connect_target(client: &mut TcpStream) -> io::Result<String> {
             break;
         }
         if buf.len() > 64 * 1024 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "request too large"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request too large",
+            ));
         }
     }
 

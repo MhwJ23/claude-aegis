@@ -52,8 +52,8 @@
   - ✅ 机制验证：文件隔离通过（普通进程读秘密 exit 0，AppContainer 进程被拒 exit 1）
   - ✅ 端到端验证：claude.exe 关进 AppContainer 能启动（--version）、连 API（-p 回复 OK）、正常退出
   - **结论：技术路线完全可行，进入阶段 1**。详见 `claude-aegis/spike/FINDINGS.md`
-- **阶段 1 — Rust 核心库**：用 rappct 实现四类控制，配单元测试 + 隔离测试。
-- **阶段 2 — CLI 完整化**：配置加载、命令行参数、错误处理、`init`/`run` 子命令。
+- **阶段 1 — Rust 核心库**：用 rappct 实现四类控制，配单元测试 + 隔离测试。✅
+- **阶段 2 — CLI 完整化**：配置加载、命令行参数、错误处理、`init`/`run` 子命令。✅（2026-08-22 完成：TOML 配置 + clap CLI + 域名代理接回 launch，claude.exe 实弹经域内代理回复 OK，详见 `spike/FINDINGS.md`）
 - **阶段 3 — GUI（第二批）**：图形配置界面（技术栈届时再定，候选 Tauri）。
 - **阶段 4 — 发布**：README（中英双语）、CI（GitHub Actions Windows runner 编译）、License、发布到 GitHub。
 

@@ -14,9 +14,11 @@
 //! The engine wraps [`rappct`], validated end-to-end in the spike
 //! (see `spike/FINDINGS.md`).
 
+pub mod audit;
 pub mod config;
 mod launch;
 
+pub use audit::{AuditEvent, AuditLog};
 pub use config::{Config, ConfigError};
 pub use launch::Child;
 
@@ -76,6 +78,18 @@ pub enum FileAccess {
 }
 
 impl FileAccess {
+    /// A short, human-readable name for the audit log.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FileAccess::Read => "read",
+            FileAccess::ReadExecute => "read_execute",
+            FileAccess::Write => "write",
+            FileAccess::ReadWrite => "read_write",
+            FileAccess::Full => "full",
+            FileAccess::Traverse => "traverse",
+        }
+    }
+
     /// Map to Windows generic access masks (GENERIC_READ / WRITE / EXECUTE).
     fn mask(self) -> AccessMask {
         match self {
@@ -99,6 +113,9 @@ pub struct SandboxConfig {
     /// Process allow-list: executables the sandbox may launch.
     /// Empty means "allow all".
     pub allowed_binaries: Vec<String>,
+    /// Optional audit log path. When set, the sandbox appends launch / exit /
+    /// grant events to this JSON-lines file.
+    pub audit_log: Option<std::path::PathBuf>,
 }
 
 /// A live AppContainer sandbox: a profile and its SID.
@@ -111,6 +128,7 @@ pub struct Sandbox {
     sid: AppContainerSid,
     profile_name: String,
     allowed_binaries: Vec<String>,
+    audit: Option<AuditLog>,
 }
 
 impl Sandbox {
@@ -127,7 +145,23 @@ impl Sandbox {
             sid,
             profile_name: config.profile_name.clone(),
             allowed_binaries: config.allowed_binaries.clone(),
+            audit: config.audit_log.clone().map(AuditLog::at),
         })
+    }
+
+    /// Append an event to the audit log, if one is configured.
+    ///
+    /// Best-effort: audit failures are ignored (a run should not abort because
+    /// the audit file could not be written).
+    pub fn record(&self, event: AuditEvent) {
+        if let Some(audit) = &self.audit {
+            let _ = audit.append(&event);
+        }
+    }
+
+    /// The audit log path, when auditing is configured.
+    pub fn audit_path(&self) -> Option<&std::path::Path> {
+        self.audit.as_ref().map(|a| a.path())
     }
 
     /// The profile name (identity) this sandbox runs under.
@@ -199,6 +233,10 @@ impl Sandbox {
     pub fn grant_dir(&self, path: &str, access: FileAccess) -> Result<(), SandboxError> {
         let resource = ResourcePath::Directory(std::path::PathBuf::from(path));
         grant_to_package(resource, &self.sid, access.mask())?;
+        self.record(AuditEvent::Grant {
+            path: path.to_string(),
+            access: access.as_str().to_string(),
+        });
         Ok(())
     }
 
@@ -206,6 +244,10 @@ impl Sandbox {
     pub fn grant_file(&self, path: &str, access: FileAccess) -> Result<(), SandboxError> {
         let resource = ResourcePath::File(std::path::PathBuf::from(path));
         grant_to_package(resource, &self.sid, access.mask())?;
+        self.record(AuditEvent::Grant {
+            path: path.to_string(),
+            access: access.as_str().to_string(),
+        });
         Ok(())
     }
 
@@ -273,11 +315,38 @@ impl Sandbox {
     /// process allow-list is configured, `exe` is checked against it
     /// (case-insensitive) before launch. When `proxy_addr` is set, the child's
     /// HTTP(S) traffic is routed through the loopback proxy at that address.
+    /// When `new_console` is true the child runs in its own console window
+    /// (used by the GUI, whose own process has no console).
     pub fn launch(
         &self,
         exe: &str,
         args: &[&str],
         proxy_addr: Option<&str>,
+        new_console: bool,
+    ) -> Result<Child, SandboxError> {
+        self.launch_internal(exe, args, proxy_addr, new_console, None)
+    }
+
+    /// Launch a process inside the sandbox with its stdout redirected to a file
+    /// (append mode). Used for the domain proxy: its audit lines are written to
+    /// stdout, which the host redirects into the audit log — so the sandboxed
+    /// process never needs write access to the audit file itself.
+    pub fn launch_with_stdout(
+        &self,
+        exe: &str,
+        args: &[&str],
+        stdout: &std::path::Path,
+    ) -> Result<Child, SandboxError> {
+        self.launch_internal(exe, args, None, false, Some(stdout))
+    }
+
+    fn launch_internal(
+        &self,
+        exe: &str,
+        args: &[&str],
+        proxy_addr: Option<&str>,
+        new_console: bool,
+        stdout_path: Option<&std::path::Path>,
     ) -> Result<Child, SandboxError> {
         if !self.allowed_binaries.is_empty()
             && !self
@@ -290,7 +359,20 @@ impl Sandbox {
             )));
         }
 
-        launch::launch_appcontainer(&self.profile_name, exe, args, proxy_addr)
+        let child = launch::launch_appcontainer(
+            &self.profile_name,
+            exe,
+            args,
+            proxy_addr,
+            new_console,
+            stdout_path,
+        )?;
+        self.record(AuditEvent::Launch {
+            profile: self.profile_name.clone(),
+            command: exe.to_string(),
+            pid: child.pid(),
+        });
+        Ok(child)
     }
 
     /// Delete the AppContainer profile, cleaning up the sandbox identity.

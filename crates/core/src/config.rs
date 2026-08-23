@@ -3,11 +3,11 @@
 //! Loaded by `claude-aegis run`; scaffolded by `claude-aegis init`. The schema
 //! maps one-to-one onto [`crate::SandboxConfig`] (see `Config::into_sandbox`).
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// A parsed `claude-aegis.toml`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     /// AppContainer profile name (identity). Default `"claude-aegis"`.
@@ -34,7 +34,7 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct Files {
     /// Directories the sandbox may read (and traverse).
@@ -43,7 +43,7 @@ pub struct Files {
     pub write: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct Network {
     /// Domains the sandbox may reach, enforced by the loopback proxy.
@@ -51,7 +51,7 @@ pub struct Network {
     pub domains: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct Process {
     /// Executable paths the sandbox may launch. Empty means "allow all".
@@ -66,6 +66,11 @@ impl Config {
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
         let text = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
         toml::from_str(&text).map_err(ConfigError::Toml)
+    }
+
+    /// Serialize back to a pretty TOML string (used by the GUI's "Save").
+    pub fn to_toml_string(&self) -> Result<String, toml::ser::Error> {
+        toml::to_string_pretty(self)
     }
 
     /// A starter template, written by `claude-aegis init`.

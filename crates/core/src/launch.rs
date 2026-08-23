@@ -12,8 +12,11 @@
 //! with ERROR_FILE_NOT_FOUND. See spike/FINDINGS.md.
 
 use crate::SandboxError;
+use std::os::windows::io::AsRawHandle;
+use std::path::Path;
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, HANDLE, HLOCAL, LocalFree, WAIT_FAILED,
+    CloseHandle, GetLastError, HANDLE, HANDLE_FLAG_INHERIT, HLOCAL, LocalFree,
+    SetHandleInformation, WAIT_FAILED,
 };
 use windows::Win32::Security::{
     CreateWellKnownSid, PSID, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
@@ -21,10 +24,10 @@ use windows::Win32::Security::{
 };
 use windows::Win32::System::Memory::{LMEM_FIXED, LocalAlloc};
 use windows::Win32::System::Threading::{
-    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
-    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, STARTUPINFOEXW, STARTUPINFOW,
-    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_NEW_CONSOLE, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+    STARTUPINFOEXW, STARTUPINFOW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -119,6 +122,8 @@ pub fn launch_appcontainer(
     exe: &str,
     args: &[&str],
     proxy_addr: Option<&str>,
+    new_console: bool,
+    stdout_path: Option<&Path>,
 ) -> Result<Child, SandboxError> {
     let app_sid = get_appcontainer_sid(profile_name)?;
     let cap_sid = get_internet_client_sid()?;
@@ -165,6 +170,27 @@ pub fn launch_appcontainer(
     si.lpAttributeList = attr_list;
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
+    // Redirect the child's stdout to a file (append mode). Used to capture the
+    // domain proxy's audit lines without granting the sandbox write access to
+    // the audit file — the host keeps the handle, the child just inherits it.
+    let _stdout_file = if let Some(path) = stdout_path {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        let handle = HANDLE(file.as_raw_handle());
+        // The handle must be inheritable so CreateProcessW (with bInheritHandles)
+        // can hand it to the child.
+        unsafe {
+            let _ = SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT);
+        }
+        si.StartupInfo.hStdOutput = handle;
+        si.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+        Some(file)
+    } else {
+        None
+    };
+
     // Set proxy vars on the current process; the child inherits them
     // (lpEnvironment = NULL). Avoids CREATE_UNICODE_ENVIRONMENT, which fails
     // with ERROR_ENVVAR_NOT_FOUND in the AppContainer path on 24H2.
@@ -188,8 +214,8 @@ pub fn launch_appcontainer(
             PWSTR(cmdline_w.as_mut_ptr()),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            0,
-            EXTENDED_STARTUPINFO_PRESENT.0,
+            i32::from(stdout_path.is_some()),
+            EXTENDED_STARTUPINFO_PRESENT.0 | if new_console { CREATE_NEW_CONSOLE.0 } else { 0 },
             std::ptr::null_mut(),
             PCWSTR::null(),
             &si as *const STARTUPINFOEXW as *mut STARTUPINFOW,

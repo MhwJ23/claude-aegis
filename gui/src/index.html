@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>claude-aegis</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">&#128737;&#65039;</div>
+        <div>
+          <h1>claude-aegis</h1>
+          <p class="subtitle">AppContainer sandbox for Claude Code on Windows</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <input id="config-path" class="config-path" type="text" placeholder="claude-aegis.toml" spellcheck="false" />
+        <button id="btn-load" class="btn btn-secondary">Load</button>
+        <button id="btn-save" class="btn btn-secondary">Save</button>
+        <button id="btn-run" class="btn btn-primary">Run sandbox</button>
+        <span id="status" class="status">Idle</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="config-pane">
+        <div class="card">
+          <h2>Sandbox</h2>
+          <label>Profile name
+            <input id="profile" type="text" placeholder="claude-aegis" spellcheck="false" />
+          </label>
+          <label>Command to sandbox
+            <input id="command" type="text" placeholder="claude" spellcheck="false" />
+          </label>
+          <p class="hint">A bare name (resolved from PATH) or a full path to the program.</p>
+        </div>
+
+        <div class="card">
+          <h2>File access</h2>
+          <div class="field-block">
+            <label>Read directories</label>
+            <ul id="read-dirs" class="dir-list"></ul>
+            <button class="btn btn-ghost btn-add" data-target="read">+ Add directory</button>
+          </div>
+          <div class="field-block">
+            <label>Write directories</label>
+            <ul id="write-dirs" class="dir-list"></ul>
+            <button class="btn btn-ghost btn-add" data-target="write">+ Add directory</button>
+          </div>
+          <p class="hint">Everything else is hidden from the sandbox.</p>
+        </div>
+
+        <div class="card">
+          <h2>Network</h2>
+          <label>Allowed domains (comma-separated)
+            <input id="domains" type="text" placeholder="api.anthropic.com, github.com" spellcheck="false" />
+          </label>
+          <p class="hint">Enforced by a loopback domain proxy. Empty = no domain filter.</p>
+        </div>
+
+        <div class="card">
+          <h2>Process</h2>
+          <label>Allowed executables (comma-separated)
+            <input id="allow" type="text" placeholder="git.exe, node.exe" spellcheck="false" />
+          </label>
+          <p class="hint">Empty = allow all.</p>
+        </div>
+      </section>
+
+      <section class="audit-pane">
+        <div class="card audit-card">
+          <div class="audit-header">
+            <h2>Audit log</h2>
+            <div class="audit-actions">
+              <button id="btn-refresh" class="btn btn-ghost">Refresh</button>
+              <button id="btn-clear" class="btn btn-ghost">Clear</button>
+            </div>
+          </div>
+          <p id="audit-path" class="audit-path"></p>
+          <div id="audit-log" class="audit-log">
+            <div class="audit-empty">No events yet.</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="main.js"></script>
+  </body>
+</html>

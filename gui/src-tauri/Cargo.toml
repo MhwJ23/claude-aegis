@@ -1,0 +1,20 @@
+[package]
+name = "claude-aegis-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Tauri GUI for claude-aegis: graphical config + audit log"
+
+[lib]
+name = "claude_aegis_gui_lib"
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+tauri = "2"
+serde = { version = "1", features = ["derive"] }
+rfd = "0.15"
+claude-aegis-core = { path = "../../crates/core" }
+rappct.workspace = true

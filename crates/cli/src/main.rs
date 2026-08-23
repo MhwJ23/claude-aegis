@@ -1,7 +1,7 @@
 //! claude-aegis: run a program (e.g. Claude Code) inside an AppContainer sandbox.
 
 use clap::{Parser, Subcommand};
-use claude_aegis_core::{Config, FileAccess, Sandbox, SandboxConfig};
+use claude_aegis_core::{AuditEvent, Config, FileAccess, Sandbox, SandboxConfig};
 use rappct::KnownCapability;
 use std::path::{Path, PathBuf};
 
@@ -35,6 +35,10 @@ enum Commands {
         /// Project directory to grant read+write (on top of the config).
         #[arg(short, long)]
         dir: Option<PathBuf>,
+        /// Append sandbox activity (launch/exit/grants/network) to a JSON-lines
+        /// audit log.
+        #[arg(long)]
+        audit_log: Option<PathBuf>,
         /// Arguments forwarded to the sandboxed program (after `--`).
         #[arg(last = true)]
         args: Vec<String>,
@@ -52,7 +56,12 @@ fn main() {
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Init { force, dir } => cmd_init(force, dir),
-        Commands::Run { config, dir, args } => cmd_run(config, dir, args),
+        Commands::Run {
+            config,
+            dir,
+            audit_log,
+            args,
+        } => cmd_run(config, dir, audit_log, args),
     }
 }
 
@@ -75,6 +84,7 @@ fn cmd_init(force: bool, dir: Option<PathBuf>) -> Result<(), Box<dyn std::error:
 fn cmd_run(
     config: Option<PathBuf>,
     dir: Option<PathBuf>,
+    audit_log: Option<PathBuf>,
     args: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = config.unwrap_or_else(|| PathBuf::from(Config::FILE_NAME));
@@ -87,6 +97,7 @@ fn cmd_run(
         profile_name: cfg.profile.clone(),
         capabilities: vec![KnownCapability::InternetClient],
         allowed_binaries: cfg.process.allow.clone(),
+        audit_log: audit_log.clone(),
     })?;
 
     // File grants: config read/write dirs + the `--dir` shorthand.
@@ -115,24 +126,48 @@ fn cmd_run(
         let addr = format!("127.0.0.1:{port}");
         let _ = sandbox.grant_file_chain(&proxy_exe.to_string_lossy(), FileAccess::ReadExecute);
         let allow = cfg.network.domains.join(",");
-        let child = sandbox.launch(
-            &proxy_exe.to_string_lossy(),
-            &["--listen", &addr, "--allow", &allow],
-            None,
-        )?;
+        let mut proxy_args = vec![
+            "--listen".to_string(),
+            addr.clone(),
+            "--allow".to_string(),
+            allow,
+        ];
+        if audit_log.is_some() {
+            proxy_args.push("--audit".to_string());
+        }
+        let proxy_arg_refs: Vec<&str> = proxy_args.iter().map(String::as_str).collect();
+        // The proxy writes its `net` decisions to stdout (when --audit is set);
+        // redirect that stdout into the audit log so the sandboxed proxy never
+        // needs write access to the audit file itself.
+        let child = match &audit_log {
+            Some(audit) => {
+                sandbox.launch_with_stdout(&proxy_exe.to_string_lossy(), &proxy_arg_refs, audit)?
+            }
+            None => sandbox.launch(&proxy_exe.to_string_lossy(), &proxy_arg_refs, None, false)?,
+        };
         // Give the proxy a moment to bind before the program starts.
         std::thread::sleep(std::time::Duration::from_millis(500));
         (Some(addr), Some(child))
     };
 
-    // Launch the program inside the sandbox.
+    // Launch the program inside the sandbox (shares this process's console).
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let child = sandbox.launch(&exe.to_string_lossy(), &arg_refs, proxy_addr.as_deref())?;
+    let child = sandbox.launch(
+        &exe.to_string_lossy(),
+        &arg_refs,
+        proxy_addr.as_deref(),
+        false,
+    )?;
     let code = child.wait()?;
+    sandbox.record(AuditEvent::Exit {
+        pid: child.pid(),
+        code,
+    });
 
     // The proxy would otherwise run forever; stop it now that the program is done.
     if let Some(proxy) = proxy_child {
         let _ = proxy.kill();
+        sandbox.record(AuditEvent::ProxyStop);
     }
 
     if code != 0 {

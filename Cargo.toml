@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/cli", "crates/proxy"]
+members = ["crates/core", "crates/cli", "crates/proxy", "gui/src-tauri"]
+# `cargo build`/`test` at the root targets only the CLI crates; the Tauri GUI is
+# heavy to compile and is built explicitly (`cargo build -p claude-aegis-gui`).
+default-members = ["crates/core", "crates/cli", "crates/proxy"]
 
 [workspace.package]
 version = "0.1.0"

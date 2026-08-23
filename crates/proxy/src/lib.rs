@@ -3,14 +3,23 @@
 //! The proxy listens on a loopback address, accepts `CONNECT host:port` requests,
 //! and only tunnels connections whose target host is in the allow-list. It does
 //! NOT terminate TLS — encrypted traffic passes through untouched (no MITM).
+//!
+//! Audit: when enabled (`--audit`), the proxy writes one JSON line per event to
+//! **stdout** (`proxy_start`, `net` allow/deny). The host process redirects that
+//! stdout into the shared audit log, so the sandboxed proxy never needs write
+//! access to the audit file itself (which the sandboxed program could otherwise
+//! tamper with — see PLAN.md / spike/FINDINGS.md).
 
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A loopback CONNECT proxy that only tunnels allow-listed domains.
 #[derive(Debug, Clone)]
 pub struct Proxy {
     allowlist: Vec<String>,
+    /// Whether to emit audit events (JSON-lines) to stdout.
+    audit: bool,
 }
 
 impl Proxy {
@@ -19,7 +28,12 @@ impl Proxy {
     /// A domain entry also matches its subdomains (e.g. `anthropic.com`
     /// allows `api.anthropic.com`).
     pub fn new(allowlist: Vec<String>) -> Self {
-        Proxy { allowlist }
+        Proxy::with_audit(allowlist, false)
+    }
+
+    /// Create a proxy that additionally writes audit events to stdout.
+    pub fn with_audit(allowlist: Vec<String>, audit: bool) -> Self {
+        Proxy { allowlist, audit }
     }
 
     /// Bind to `addr` and return the listener plus the actual bound address.
@@ -34,12 +48,21 @@ impl Proxy {
 
     /// Serve connections from an already-bound listener (blocking).
     pub fn serve_listener(&self, listener: TcpListener) -> io::Result<()> {
+        if self.audit
+            && let Ok(addr) = listener.local_addr()
+        {
+            audit_print(
+                "proxy_start",
+                &[("addr", serde_json::Value::from(addr.to_string()))],
+            );
+        }
         for conn in listener.incoming() {
             match conn {
                 Ok(client) => {
                     let allowlist = self.allowlist.clone();
+                    let audit = self.audit;
                     std::thread::spawn(move || {
-                        let _ = handle(client, &allowlist);
+                        let _ = handle(client, &allowlist, audit);
                     });
                 }
                 Err(_) => continue,
@@ -56,11 +79,20 @@ impl Proxy {
 }
 
 /// Handle a single client connection: parse CONNECT, enforce allow-list, tunnel.
-fn handle(mut client: TcpStream, allowlist: &[String]) -> io::Result<()> {
+fn handle(mut client: TcpStream, allowlist: &[String], audit: bool) -> io::Result<()> {
     let target = read_connect_target(&mut client)?;
     let host = host_of(&target);
 
     if !allowed(host, allowlist) {
+        if audit {
+            audit_print(
+                "net",
+                &[
+                    ("host", serde_json::Value::from(host)),
+                    ("allowed", serde_json::Value::from(false)),
+                ],
+            );
+        }
         let _ = client.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n");
         return Ok(());
     }
@@ -73,8 +105,41 @@ fn handle(mut client: TcpStream, allowlist: &[String]) -> io::Result<()> {
         }
     };
 
+    if audit {
+        audit_print(
+            "net",
+            &[
+                ("host", serde_json::Value::from(host)),
+                ("allowed", serde_json::Value::from(true)),
+            ],
+        );
+    }
     client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     tunnel(client, server)
+}
+
+/// Build one JSON-lines audit entry (with a `ts` field) as a string.
+fn audit_line(event: &str, fields: &[(&str, serde_json::Value)]) -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut obj = serde_json::Map::new();
+    obj.insert("event".to_string(), serde_json::Value::from(event));
+    obj.insert("ts".to_string(), serde_json::Value::from(ts));
+    for (k, v) in fields {
+        obj.insert((*k).to_string(), v.clone());
+    }
+    serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default()
+}
+
+/// Emit one audit line to stdout (best-effort; a write failure must not break
+/// proxying).
+fn audit_print(event: &str, fields: &[(&str, serde_json::Value)]) {
+    let line = audit_line(event, fields);
+    println!("{line}");
+    let _ = io::stdout().flush();
 }
 
 /// Read the request headers and return the CONNECT target (`host:port`).
@@ -159,5 +224,25 @@ mod tests {
         assert!(allowed("github.com", &list));
         assert!(!allowed("evil.com", &list));
         assert!(!allowed("notanthropic.com", &list));
+    }
+
+    #[test]
+    fn audit_line_escapes_untrusted_host() {
+        // A host is attacker-controlled (from the CONNECT line); it must survive
+        // a JSON round-trip without breaking the line structure.
+        let host = "evil\"host\n.com\\";
+        let line = audit_line(
+            "net",
+            &[
+                ("host", serde_json::Value::from(host)),
+                ("allowed", serde_json::Value::from(false)),
+            ],
+        );
+        assert_eq!(line.lines().count(), 1);
+        let obj: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(obj["event"], "net");
+        assert_eq!(obj["host"], host);
+        assert_eq!(obj["allowed"], false);
+        assert!(obj["ts"].is_u64());
     }
 }

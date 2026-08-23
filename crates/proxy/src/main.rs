@@ -11,9 +11,10 @@ fn main() {
 }
 
 fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    // Parse: [--listen 127.0.0.1:8080] [--allow a.com,b.com]...
+    // Parse: [--listen 127.0.0.1:8080] [--allow a.com,b.com] [--audit]...
     let mut listen = "127.0.0.1:8080".to_string();
     let mut allowlist: Vec<String> = Vec::new();
+    let mut audit = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -31,6 +32,7 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                         .filter(|s| !s.is_empty()),
                 );
             }
+            "--audit" => audit = true,
             other => {
                 return Err(format!("unknown argument: {other}").into());
             }
@@ -45,7 +47,7 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("claude-aegis-proxy listening on {listen}");
     eprintln!("allow-list: {}", allowlist.join(", "));
 
-    let proxy = Proxy::new(allowlist);
+    let proxy = Proxy::with_audit(allowlist, audit);
     proxy.serve(&listen)?;
     Ok(())
 }

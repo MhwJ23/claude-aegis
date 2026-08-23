@@ -36,6 +36,19 @@ claude-aegis 正是填补这个空白。
 
 ---
 
+## 安装
+
+从 [GitHub Releases](https://github.com/MhwJ23/claude-aegis/releases) 下载最新版：
+
+- **`claude-aegis_*_x64-setup.exe`** —— 一键 Windows 安装包（非技术用户推荐；
+  一次装好 CLI、代理和 GUI）。
+- **`claude-aegis-v*.zip`** —— 便携版二进制（`claude-aegis.exe`、
+  `claude-aegis-proxy.exe`、`claude-aegis-gui.exe`），解压即用。
+
+需要 Windows 10 1703+（LPAC）。无需管理员权限。
+
+---
+
 ## 能做什么
 
 四类控制，由 Windows AppContainer（LowBox/LPAC）机制强制执行：

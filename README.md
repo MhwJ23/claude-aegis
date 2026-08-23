@@ -38,6 +38,20 @@ claude-aegis closes that gap.
 
 ---
 
+## Install
+
+Download the latest release from
+[GitHub Releases](https://github.com/MhwJ23/claude-aegis/releases):
+
+- **`claude-aegis_*_x64-setup.exe`** — a one-click Windows installer (recommended
+  for non-technical users; installs the CLI, proxy, and GUI).
+- **`claude-aegis-v*.zip`** — portable binaries (`claude-aegis.exe`,
+  `claude-aegis-proxy.exe`, `claude-aegis-gui.exe`); unzip and run.
+
+Requires Windows 10 1703+ (LPAC). No administrator rights needed.
+
+---
+
 ## What it does
 
 Four controls, enforced by the Windows AppContainer (LowBox/LPAC) mechanism:

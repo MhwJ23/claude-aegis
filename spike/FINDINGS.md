@@ -228,3 +228,12 @@
   代码已标注 "future enhancement"。
 - **%TEMP% 默认对 AppContainer 可读**：Win11 24H2 的 `%TEMP%` 继承 `ALL APPLICATION PACKAGES:(RX)`，任何 AppContainer
   默认能读 %TEMP% 下的文件——隔离测试的 secret 因此要放 D 盘（默认拒绝），这也是个值得写进 README 的事实。
+
+---
+
+## ✅ NSIS 安装包 + v0.1.1（2026-08-23）
+
+- `tauri.conf.json` 开 `bundle.active: true` + `targets: ["nsis"]`；`tauri build` 产出 `claude-aegis_0.1.1_x64-setup.exe`。
+- 本地用 `npm i -g @tauri-apps/cli`（预编译二进制，快）+ `tauri build` 验证；release.yml 加两步（装 CLI + `tauri build`，
+  working-directory `gui/src-tauri`），产物上传 `target/release/bundle/nsis/*.exe`。
+- v0.1.1 发布产物：便携 zip + NSIS 安装包两个。README 顶部加「安装」段。

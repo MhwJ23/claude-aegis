@@ -34,7 +34,16 @@ jobs:
           Copy-Item LICENSE $dir/
           Compress-Archive -Path $dir -DestinationPath "$dir.zip" -Force
 
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli
+
+      - name: Build NSIS installer
+        working-directory: gui/src-tauri
+        run: tauri build
+
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: "claude-aegis-*.zip"
+          files: |
+            claude-aegis-*.zip
+            target/release/bundle/nsis/*.exe
